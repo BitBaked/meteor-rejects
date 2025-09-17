@@ -1,90 +1,59 @@
-package anticope.rejects.modules;
+@EventHandler
+private void onChat(ReceiveMessageEvent e) {
+    if (mc() == null || e.getMessage() == null) return;
+    String raw = e.getMessage().getString();
 
-import anticope.rejects.MeteorRejectsAddon;
-import anticope.rejects.settings.StringMapSetting;
-import meteordevelopment.meteorclient.events.game.ReceiveMessageEvent;
-import meteordevelopment.meteorclient.gui.utils.StarscriptTextBoxRenderer;
-import meteordevelopment.meteorclient.settings.BoolSetting;
-import meteordevelopment.meteorclient.settings.Setting;
-import meteordevelopment.meteorclient.settings.SettingGroup;
-import meteordevelopment.meteorclient.settings.StringSetting;
-import meteordevelopment.meteorclient.systems.modules.Module;
-import meteordevelopment.meteorclient.utils.misc.MeteorStarscript;
-import meteordevelopment.meteorclient.utils.player.ChatUtils;
-import meteordevelopment.orbit.EventHandler;
-import meteordevelopment.starscript.Script;
-import meteordevelopment.starscript.compiler.Compiler;
-import meteordevelopment.starscript.compiler.Parser;
-import meteordevelopment.starscript.utils.StarscriptError;
+    ParsedChat pc = parseIncoming(raw);
+    if (pc == null) return;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
+    String sender = pc.sender;
+    String msg = pc.msg;
+    boolean cameFromDM = pc.isPrivate;
 
-public class ChatBot extends Module {
+    if (!msg.startsWith(prefix.get())) return;
+    String cmdline = msg.substring(prefix.get().length()).trim();
+    if (cmdline.isEmpty()) return;
 
-    private final SettingGroup sgGeneral = settings.getDefaultGroup();
-
-    private final Setting<String> prefix = sgGeneral.add(new StringSetting.Builder()
-            .name("prefix")
-            .description("Command prefix for the bot.")
-            .defaultValue("!")
-            .build()
-    );
-
-    private final Setting<Boolean> help = sgGeneral.add(new BoolSetting.Builder()
-            .name("help")
-            .description("Add help command.")
-            .defaultValue(true)
-            .build()
-    );
-
-    private final Setting<Map<String, String>> commands = sgGeneral.add(new StringMapSetting.Builder()
-            .name("commands")
-            .description("Commands.")
-            .renderer(StarscriptTextBoxRenderer.class)
-            .defaultValue(new LinkedHashMap<>() {{
-                put("ping", "Pong!");
-                put("tps", "Current TPS: {server.tps}");
-                put("time", "It's currently {server.time}");
-                put("pos", "I am @ {player.pos}");
-            }})
-            .build()
-    );
-
-    public ChatBot() {
-        super(MeteorRejectsAddon.CATEGORY, "chat-bot", "Bot which automatically responds to chat messages.");
-    }
-
-    @EventHandler
-    private void onMessageRecieve(ReceiveMessageEvent event) {
-        String msg = event.getMessage().getString();
-        if (help.get() && msg.endsWith(prefix.get() + "help")) {
-            ChatUtils.sendPlayerMsg("Available commands: " + String.join(", ", commands.get().keySet()));
+    if (enableInfo.get()) {
+        if (cmdline.equalsIgnoreCase("help")) {
+            replySmart(sender, safeOut(
+                "Commands: " + prefix.get() + "help, " + prefix.get() + "ping, " +
+                prefix.get() + "info, " + prefix.get() + "leave <player> <message>, " + prefix.get() + "inbox"), cameFromDM);
             return;
         }
-        for (String cmd : commands.get().keySet()) {
-            if (msg.endsWith(prefix.get() + cmd)) {
-                Script script = compile(commands.get().get(cmd));
-                if (script == null) ChatUtils.sendPlayerMsg("An error occurred");
-                try {
-                    var section = MeteorStarscript.ss.run(script);
-                    ChatUtils.sendPlayerMsg(section.text);
-                } catch (StarscriptError e) {
-                    MeteorStarscript.printChatError(e);
-                    ChatUtils.sendPlayerMsg("An error occurred");
-                }
-                return;
-            }
+        if (cmdline.equalsIgnoreCase("ping")) {
+            Integer p = getLatencyFor(sender);
+            replySmart(sender, p == null ? "Ping: N/A (not visible in tablist)" : ("Your ping: " + p + " ms"), cameFromDM);
+            return;
+        }
+        if (cmdline.equalsIgnoreCase("info")) {
+            replySmart(sender, safeOut(buildInfoLine()), cameFromDM);
+            return;
         }
     }
 
-    private static Script compile(String script) {
-        if (script == null) return null;
-        Parser.Result result = Parser.parse(script);
-        if (result.hasErrors()) {
-            MeteorStarscript.printChatError(result.errors.get(0));
-            return null;
+    if (enableOffline.get()) {
+        if (cmdline.toLowerCase(Locale.ROOT).startsWith("leave ")) {
+            String[] parts = cmdline.split("\\s+", 3);
+            if (parts.length < 3) {
+                replySmart(sender, "Usage: " + prefix.get() + "leave <player> <message>", cameFromDM);
+                return;
+            }
+            String target = parts[1];
+            String message = parts[2];
+            enqueueMessage(target, sender, message);
+            replySmart(sender, "Saved a note for " + target + ". It will be delivered when they come online.", cameFromDM);
+            if (isOnline(target)) tryDeliverTo(target);
+            return;
         }
-        return Compiler.compile(result);
+        if (cmdline.equalsIgnoreCase("inbox")) {
+            List<OfflineMsg> inbox = store.getOrDefault(sender.toLowerCase(Locale.ROOT), Collections.emptyList());
+            if (inbox.isEmpty()) replySmart(sender, "You have no offline messages.", cameFromDM);
+            else {
+                replySmart(sender, "You have " + inbox.size() + " offline message(s). They'll arrive shortly.", cameFromDM);
+                tryDeliverTo(sender);
+            }
+            return;
+        }
     }
 }
